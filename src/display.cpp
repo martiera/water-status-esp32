@@ -77,6 +77,8 @@ DisplayManager::DisplayManager() {
     tempData.lastHotWaterActivity = 0;
     bathReady = false;
     showingBathStatus = false;
+    showingBathImage = true;  // Start with bath image
+    lastDisplayToggle = 0;
     previousBathReady = false;
     minTankTemp = 52.0;
     minOutPipeTemp = 38.0;
@@ -157,31 +159,36 @@ void DisplayManager::drawTemperatures() {
 }
 
 void DisplayManager::drawRoomTemperature() {
-    // Display large room temperature in center
+    // Display large room temperature filling the screen
     int centerX = 160;
     int centerY = 86;
     
     tft.fillScreen(TFT_BLACK);
     
     if (tempData.roomValid) {
-        // Draw large temperature
+        // Draw extra large temperature - use setTextSize to scale up font 7
         char buf[16];
         float displayTemp = convertTemp(tempData.roomTemp);
         snprintf(buf, sizeof(buf), "%.1f%s", displayTemp, getTempUnit());
         
         tft.setTextColor(TFT_CYAN, TFT_BLACK);
         tft.setTextDatum(MC_DATUM);
-        tft.drawString(buf, centerX, centerY, 7);
+        tft.setTextSize(2);  // Double the size of font 7
+        tft.drawString(buf, centerX, centerY - 10, 7);
+        tft.setTextSize(1);  // Reset
         
-        // Label
+        // Label - bigger
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.drawString("Room", centerX, centerY + 50, 4);
+        tft.setTextSize(2);
+        tft.drawString("Room", centerX, centerY + 65, 4);
+        tft.setTextSize(1);
     } else {
         // No room temp data yet
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.setTextDatum(MC_DATUM);
-        tft.drawString("Waiting for", centerX, centerY - 20, 4);
-        tft.drawString("temperature data...", centerX, centerY + 20, 4);
+        tft.setTextSize(2);
+        tft.drawString("Waiting...", centerX, centerY, 4);
+        tft.setTextSize(1);
     }
 }
 
@@ -191,13 +198,18 @@ void DisplayManager::drawStatus() {
     int centerY = 86;  // Center vertically (172/2)
     
     if (bathReady) {
-        // Display baby bath image from PROGMEM
-        tft.fillScreen(TFT_BLACK);
-        
-        // Image is 172x172, center it on screen (320x172)
-        int imageX = (320 - baby_bath_image_width) / 2;
-        int imageY = 0;
-        tft.pushImage(imageX, imageY, baby_bath_image_width, baby_bath_image_height, baby_bath_image);
+        if (showingBathImage) {
+            // Display baby bath image from PROGMEM
+            tft.fillScreen(TFT_BLACK);
+            
+            // Image is 172x172, center it on screen (320x172)
+            int imageX = (320 - baby_bath_image_width) / 2;
+            int imageY = 0;
+            tft.pushImage(imageX, imageY, baby_bath_image_width, baby_bath_image_height, baby_bath_image);
+        } else {
+            // Show room temperature
+            drawRoomTemperature();
+        }
     } else {
         // Draw large octagon stop sign centered on screen
         // Screen is 320x172, so center is at (160, 86)
@@ -323,6 +335,14 @@ void DisplayManager::updateTemperature(int sensor, float value) {
 }
 
 void DisplayManager::updateBathStatus(bool ready) {
+    if (ready && !bathReady) {
+        // Just became ready - reset toggle to show bath image first
+        showingBathImage = true;
+        lastDisplayToggle = millis();
+    }
+    if (bathReady != ready) {
+        needsRedraw = true;
+    }
     bathReady = ready;
 }
 
@@ -401,6 +421,18 @@ void DisplayManager::showStartupScreen(IPAddress ip) {
 }
 
 void DisplayManager::refresh() {
+    // Check if we need to toggle bath/room display when bath is ready
+    if (bathReady && showingBathStatus) {
+        unsigned long now = millis();
+        unsigned long toggleInterval = showingBathImage ? 4000 : 2000;  // 4s bath, 2s room
+        
+        if (now - lastDisplayToggle > toggleInterval) {
+            lastDisplayToggle = now;
+            showingBathImage = !showingBathImage;
+            needsRedraw = true;
+        }
+    }
+    
     // Only redraw if something changed
     if (!needsRedraw) {
         return;

@@ -32,6 +32,8 @@ private:
     bool useCelsius;
     bool needsRedraw;
     bool showingBathStatus;  // Track display mode
+    bool showingBathImage;   // For alternating bath/room display
+    unsigned long lastDisplayToggle;  // Time of last toggle
     
     void drawHeader();
     void drawRoomTemperature();
