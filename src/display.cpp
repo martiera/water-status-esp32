@@ -63,14 +63,13 @@ DisplayManager::DisplayManager() {
     tempData.tankTemp = 0;
     tempData.outPipeTemp = 0;
     tempData.heatingInTemp = 0;
-    tempData.heatingOutTemp = 0;
     tempData.roomTemp = 0;
     tempData.previousTankTemp = 0;
     tempData.tankValid = false;
     tempData.outPipeValid = false;
     tempData.heatingInValid = false;
-    tempData.heatingOutValid = false;
     tempData.roomValid = false;
+    tempData.heatingActive = false;
     tempData.tankDropping = false;
     tempData.lastUpdate = 0;
     tempData.lastTankUpdate = 0;
@@ -111,9 +110,11 @@ void DisplayManager::begin(int brightness) {
 }
 
 void DisplayManager::setBrightness(int brightness) {
-    // Use PWM for backlight control
-    // Force to 80 for good contrast (black stays black)
-    brightness = 80;
+    // Use PWM for backlight control (0-255)
+    // Clamp brightness to safe range
+    if (brightness < 0) brightness = 0;
+    if (brightness > 255) brightness = 255;
+    
     ledcAttach(TFT_BL, 5000, 8);  // 5kHz, 8-bit resolution
     ledcWrite(TFT_BL, brightness);
     Serial.printf("Backlight set to %d\n", brightness);
@@ -192,6 +193,55 @@ void DisplayManager::drawRoomTemperature() {
     }
 }
 
+void DisplayManager::drawHeatingIndicator() {
+    // Draw smooth wavy lines simulating heat waves rising
+    // Much cleaner and more elegant animation
+    int offset = (millis() / 60) % 172;  // Smooth upward scroll
+    
+    // Draw wavy heat lines on left side
+    for (int wave = 0; wave < 3; wave++) {
+        int startY = (wave * 60 + offset) % (172 + 60) - 60;
+        
+        for (int y = startY; y < startY + 50; y += 2) {
+            if (y >= 0 && y < 172) {
+                // Create sine wave effect for horizontal position
+                int amplitude = 6;
+                int x = amplitude * sin((y + wave * 20) * 0.2) + amplitude + 2;
+                
+                // Color fades as it rises (older waves are dimmer)
+                uint16_t color;
+                float fade = (float)(y - startY) / 50.0;
+                if (fade < 0.33) color = TFT_RED;
+                else if (fade < 0.66) color = TFT_ORANGE;
+                else color = TFT_YELLOW;
+                
+                // Draw thick wavy line
+                tft.fillCircle(x, y, 3, color);
+            }
+        }
+    }
+    
+    // Draw wavy heat lines on right side (mirrored)
+    for (int wave = 0; wave < 3; wave++) {
+        int startY = (wave * 60 + offset) % (172 + 60) - 60;
+        
+        for (int y = startY; y < startY + 50; y += 2) {
+            if (y >= 0 && y < 172) {
+                int amplitude = 6;
+                int x = 320 - (amplitude * sin((y + wave * 20) * 0.2) + amplitude + 2);
+                
+                uint16_t color;
+                float fade = (float)(y - startY) / 50.0;
+                if (fade < 0.33) color = TFT_RED;
+                else if (fade < 0.66) color = TFT_ORANGE;
+                else color = TFT_YELLOW;
+                
+                tft.fillCircle(x, y, 3, color);
+            }
+        }
+    }
+}
+
 void DisplayManager::drawStatus() {
     // Draw large icon in center top area (landscape: 320x172)
     int centerX = 160;
@@ -206,25 +256,35 @@ void DisplayManager::drawStatus() {
             int imageX = (320 - baby_bath_image_width) / 2;
             int imageY = 0;
             tft.pushImage(imageX, imageY, baby_bath_image_width, baby_bath_image_height, baby_bath_image);
+            
+            // Draw heating indicator - animated heat waves on sides
+            if (tempData.heatingActive) {
+                drawHeatingIndicator();
+            }
         } else {
             // Show room temperature
             drawRoomTemperature();
+            
+            // Draw heating indicator on room temp screen too
+            if (tempData.heatingActive) {
+                drawHeatingIndicator();
+            }
         }
     } else {
         // Draw large octagon stop sign centered on screen
-        // Screen is 320x172, so center is at (160, 86)
-        int size = 85;  // Radius - slightly smaller than half height for border
-        int stopY = 172 / 2;  // Exact vertical center
+        // Screen is 320x172, make circle smaller to fit with margin
+        int size = 80;  // Reduced radius to prevent bottom cutoff
+        int stopY = 86;  // Exact vertical center (172/2)
         tft.fillCircle(centerX, stopY, size, TFT_RED);
         tft.drawCircle(centerX, stopY, size, TFT_WHITE);
         tft.drawCircle(centerX, stopY, size + 1, TFT_WHITE);
         tft.drawCircle(centerX, stopY, size + 2, TFT_WHITE);
         
-        // Draw STOP text - font 4 is largest text font (font 7 is numbers only)
+        // Draw STOP text - font 4 with proper centering
         tft.setTextColor(TFT_WHITE, TFT_RED);
-        tft.setTextDatum(MC_DATUM);
+        tft.setTextDatum(MC_DATUM);  // Middle center alignment
         tft.setTextSize(2);  // Double size
-        tft.drawString("STOP", centerX, stopY, 4);
+        tft.drawString("STOP", centerX, stopY, 4);  // Use stopY (86) for perfect centering
         tft.setTextSize(1);  // Reset
     }
 }
@@ -280,15 +340,7 @@ void DisplayManager::updateTemperature(int sensor, float value) {
             tempData.heatingInTemp = value;
             tempData.heatingInValid = true;
             break;
-        case 3: // Heating Out
-            if (abs(tempData.heatingOutTemp - value) > 0.1) {
-                changed = true;
-                tempData.lastHotWaterActivity = now;  // Activity detected
-            }
-            tempData.heatingOutTemp = value;
-            tempData.heatingOutValid = true;
-            break;
-        case 4: // Room
+        case 3: // Room
             if (abs(tempData.roomTemp - value) > 0.1) changed = true;
             tempData.roomTemp = value;
             tempData.roomValid = true;
@@ -344,6 +396,13 @@ void DisplayManager::updateBathStatus(bool ready) {
         needsRedraw = true;
     }
     bathReady = ready;
+}
+
+void DisplayManager::updateHeatingStatus(bool active) {
+    if (tempData.heatingActive != active) {
+        needsRedraw = true;
+    }
+    tempData.heatingActive = active;
 }
 
 void DisplayManager::showConfigMode() {

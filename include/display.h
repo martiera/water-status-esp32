@@ -8,18 +8,17 @@ struct TemperatureData {
     float tankTemp;
     float outPipeTemp;
     float heatingInTemp;
-    float heatingOutTemp;
     float roomTemp;
     float previousTankTemp;
     bool tankValid;
     bool outPipeValid;
     bool heatingInValid;
-    bool heatingOutValid;
     bool roomValid;
     bool tankDropping;
     unsigned long lastUpdate;
     unsigned long lastTankUpdate;
     unsigned long lastHotWaterActivity;  // Track hot water system activity
+    bool heatingActive;  // Track if heating is currently running
 };
 
 class DisplayManager {
@@ -39,6 +38,7 @@ private:
     void drawRoomTemperature();
     void drawTemperatures();
     void drawStatus();
+    void drawHeatingIndicator();
     void drawBathtubIcon(int x, int y, int size, bool ready);
     void drawThermometerBar(int x, int y, int width, int height, float temp, float minTemp, float maxTemp, uint16_t color);
     
@@ -54,6 +54,7 @@ public:
     
     void updateTemperature(int sensor, float value);
     void updateBathStatus(bool ready);
+    void updateHeatingStatus(bool active);
     
     void showConfigMode();
     void showIPAddress(IPAddress ip);

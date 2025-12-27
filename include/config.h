@@ -14,11 +14,10 @@ struct Config {
     char ha_url[128];                    // e.g., "http://192.168.1.100:8123"
     char ha_token[256];                  // Long-lived access token
     
-    // Home Assistant Entity IDs for 5 temperature sensors
+    // Home Assistant Entity IDs for temperature sensors
     char entity_tank_temp[128];          // Hot water in storage tank
     char entity_out_pipe_temp[128];      // Hot water from out pipe
     char entity_heating_in_temp[128];    // Heating pipe incoming
-    char entity_heating_out_temp[128];   // Heating pipe exiting
     char entity_room_temp[128];          // Room temperature
     
     // Temperature thresholds for bath readiness
@@ -49,8 +48,9 @@ public:
     
     void setWiFi(const char* ssid, const char* password);
     void setHA(const char* url, const char* token);
-    void setEntities(const char* tank, const char* outPipe, const char* heatIn, const char* heatOut, const char* room);
+    void setEntities(const char* tank, const char* outPipe, const char* heatIn, const char* room);
     void setThresholds(float minTank, float minOutPipe);
+    void setBrightness(int brightness);
 };
 
 #endif

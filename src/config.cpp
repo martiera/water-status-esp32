@@ -22,7 +22,6 @@ void ConfigManager::setDefaults() {
     strcpy(config.entity_tank_temp, "");
     strcpy(config.entity_out_pipe_temp, "");
     strcpy(config.entity_heating_in_temp, "");
-    strcpy(config.entity_heating_out_temp, "");
     strcpy(config.entity_room_temp, "");
     
     // Default thresholds (Celsius)
@@ -30,7 +29,7 @@ void ConfigManager::setDefaults() {
     config.min_out_pipe_temp = 38.0;     // 38°C minimum out pipe
     
     // Display settings
-    config.screen_brightness = 120;
+    config.screen_brightness = 80;
     config.celsius = true;
     
     // Polling interval
@@ -58,7 +57,6 @@ void ConfigManager::load() {
     preferences.getString("ent_tank", config.entity_tank_temp, sizeof(config.entity_tank_temp));
     preferences.getString("ent_out", config.entity_out_pipe_temp, sizeof(config.entity_out_pipe_temp));
     preferences.getString("ent_heat_in", config.entity_heating_in_temp, sizeof(config.entity_heating_in_temp));
-    preferences.getString("ent_heat_out", config.entity_heating_out_temp, sizeof(config.entity_heating_out_temp));
     preferences.getString("ent_room", config.entity_room_temp, sizeof(config.entity_room_temp));
     
     Serial.println("Loaded config:");
@@ -78,7 +76,7 @@ void ConfigManager::load() {
     config.min_out_pipe_temp = preferences.getFloat("min_out", 38.0);
     
     // Load display settings
-    config.screen_brightness = preferences.getInt("brightness", 200);
+    config.screen_brightness = preferences.getInt("brightness", 80);
     config.celsius = preferences.getBool("celsius", true);
     
     // Load polling interval
@@ -98,7 +96,6 @@ void ConfigManager::save() {
     preferences.putString("ent_tank", config.entity_tank_temp);
     preferences.putString("ent_out", config.entity_out_pipe_temp);
     preferences.putString("ent_heat_in", config.entity_heating_in_temp);
-    preferences.putString("ent_heat_out", config.entity_heating_out_temp);
     preferences.putString("ent_room", config.entity_room_temp);
     
     // Save thresholds
@@ -123,15 +120,18 @@ void ConfigManager::setHA(const char* url, const char* token) {
     strncpy(config.ha_token, token, sizeof(config.ha_token) - 1);
 }
 
-void ConfigManager::setEntities(const char* tank, const char* outPipe, const char* heatIn, const char* heatOut, const char* room) {
+void ConfigManager::setEntities(const char* tank, const char* outPipe, const char* heatIn, const char* room) {
     strncpy(config.entity_tank_temp, tank, sizeof(config.entity_tank_temp) - 1);
     strncpy(config.entity_out_pipe_temp, outPipe, sizeof(config.entity_out_pipe_temp) - 1);
     strncpy(config.entity_heating_in_temp, heatIn, sizeof(config.entity_heating_in_temp) - 1);
-    strncpy(config.entity_heating_out_temp, heatOut, sizeof(config.entity_heating_out_temp) - 1);
     strncpy(config.entity_room_temp, room, sizeof(config.entity_room_temp) - 1);
 }
 
 void ConfigManager::setThresholds(float minTank, float minOutPipe) {
     config.min_tank_temp = minTank;
     config.min_out_pipe_temp = minOutPipe;
+}
+
+void ConfigManager::setBrightness(int brightness) {
+    config.screen_brightness = brightness;
 }

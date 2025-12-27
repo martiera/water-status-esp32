@@ -37,13 +37,20 @@ const unsigned long DISPLAY_UPDATE_INTERVAL = 1000;
 float tankTemp = 0.0;
 float outPipeTemp = 0.0;
 float heatingInTemp = 0.0;
-float heatingOutTemp = 0.0;
 float roomTemp = 0.0;
+float previousHeatingInTemp = 0.0;
+unsigned long lastHeatingCheck = 0;
 
 // LED state for STOP flashing
 bool bathIsReady = false;
+bool heatingActive = false;
 unsigned long lastLedFlash = 0;
 bool ledOn = false;
+
+// Test mode for display verification
+bool testMode = false;
+int testState = 0;
+unsigned long lastTestStateChange = 0;
 
 // Function declarations
 void setupWiFi();
@@ -60,6 +67,7 @@ void handleConnect();
 void handleNotFound();
 void handleHAEntities();
 void handleHATest();
+void handleDisplayTest();
 
 void setup() {
     Serial.begin(115200);
@@ -73,7 +81,7 @@ void setup() {
     
     // Initialize RGB LED
     rgbLed.begin();
-    rgbLed.setBrightness(50);
+    rgbLed.setBrightness(255);
     rgbLed.clear();
     rgbLed.show();
     
@@ -123,7 +131,7 @@ void loop() {
     }
     
     // Poll Home Assistant periodically
-    if (wifiConnected) {
+    if (wifiConnected && !testMode) {
         Config config = configManager.getConfig();
         unsigned long pollInterval = config.poll_interval * 1000UL;
         unsigned long now = millis();
@@ -134,6 +142,50 @@ void loop() {
         }
     }
     
+    // Test mode - cycle through display states
+    if (testMode) {
+        unsigned long now = millis();
+        if (now - lastTestStateChange > 3000) {  // Change state every 3 seconds
+            lastTestStateChange = now;
+            testState = (testState + 1) % 4;
+            
+            // Set test conditions based on state
+            switch (testState) {
+                case 0:  // STOP sign
+                    bathIsReady = false;
+                    heatingActive = false;
+                    display.updateBathStatus(false);
+                    display.updateHeatingStatus(false);
+                    Serial.println("Test: STOP sign");
+                    break;
+                case 1:  // Bath ready - bath image (no heating)
+                    bathIsReady = true;
+                    heatingActive = false;
+                    tankTemp = 55.0;
+                    outPipeTemp = 42.0;
+                    roomTemp = 22.5;
+                    display.updateBathStatus(true);
+                    display.updateHeatingStatus(false);
+                    Serial.println("Test: Bath ready (no heating)");
+                    break;
+                case 2:  // Bath ready with heating active
+                    bathIsReady = true;
+                    heatingActive = true;
+                    display.updateBathStatus(true);
+                    display.updateHeatingStatus(true);
+                    Serial.println("Test: Bath ready + heating active");
+                    break;
+                case 3:  // Room temperature display
+                    bathIsReady = true;
+                    heatingActive = true;
+                    roomTemp = 23.8;
+                    display.updateTemperature(3, roomTemp);
+                    Serial.println("Test: Room temperature");
+                    break;
+            }
+        }
+    }
+    
     // Update display periodically
     unsigned long now = millis();
     if (now - lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL) {
@@ -141,8 +193,9 @@ void loop() {
         display.refresh();
     }
     
-    // Flash LED red when STOP (not ready)
+    // LED feedback based on state
     if (!bathIsReady) {
+        // Flash LED red when STOP (not ready)
         if (now - lastLedFlash > 500) {  // Flash every 500ms
             lastLedFlash = now;
             ledOn = !ledOn;
@@ -153,12 +206,25 @@ void loop() {
             }
             rgbLed.show();
         }
-    } else {
-        // Bath ready - LED off or green
-        if (ledOn) {
-            rgbLed.clear();
+    } else if (heatingActive) {
+        // Bath ready AND heating active - pulse orange
+        if (now - lastLedFlash > 1000) {  // Pulse every 1 second
+            lastLedFlash = now;
+            ledOn = !ledOn;
+            if (ledOn) {
+                rgbLed.setPixelColor(0, rgbLed.Color(255, 140, 0));  // Orange
+            } else {
+                rgbLed.setPixelColor(0, rgbLed.Color(64, 35, 0));  // Dim orange
+            }
             rgbLed.show();
-            ledOn = false;
+        }
+    } else {
+        // Bath ready, heating inactive - solid green
+        if (!ledOn || now - lastLedFlash > 2000) {
+            rgbLed.setPixelColor(0, rgbLed.Color(0, 255, 0));  // Green
+            rgbLed.show();
+            ledOn = true;
+            lastLedFlash = now;
         }
     }
     
@@ -308,22 +374,12 @@ void pollHomeAssistant() {
         }
     }
     
-    // Fetch heating out temperature
-    if (strlen(config.entity_heating_out_temp) > 0) {
-        float temp = fetchHAEntityState(config.entity_heating_out_temp);
-        if (temp != 0.0 || heatingOutTemp == 0.0) {
-            heatingOutTemp = temp;
-            display.updateTemperature(3, heatingOutTemp);
-            anySuccess = true;
-        }
-    }
-    
     // Fetch room temperature
     if (strlen(config.entity_room_temp) > 0) {
         float temp = fetchHAEntityState(config.entity_room_temp);
         if (temp != 0.0 || roomTemp == 0.0) {
             roomTemp = temp;
-            display.updateTemperature(4, roomTemp);
+            display.updateTemperature(3, roomTemp);
             anySuccess = true;
         }
     }
@@ -333,13 +389,39 @@ void pollHomeAssistant() {
     Serial.print("Any success: ");
     Serial.println(anySuccess ? "YES" : "NO");
     
-    // Check bath readiness and update global state for LED flashing
-    bathIsReady = (tankTemp >= config.min_tank_temp && outPipeTemp >= config.min_out_pipe_temp);
+    // Detect heating activity (heating in temp increased in last 5 minutes)
+    unsigned long now = millis();
+    if (now - lastHeatingCheck > 60000) { // Check every minute
+        // Only compare if we have a valid previous reading (not the initial 0.0)
+        if (previousHeatingInTemp > 0.0 && heatingInTemp > 0.0) {
+            if (heatingInTemp > previousHeatingInTemp + 1) {
+                heatingActive = true;
+                Serial.println("Heating ACTIVE detected");
+            } else if (heatingInTemp < previousHeatingInTemp - 1) {
+                heatingActive = false;
+                Serial.println("Heating INACTIVE");
+            }
+        }
+        // Update previous reading only if current reading is valid
+        if (heatingInTemp > 0.0) {
+            previousHeatingInTemp = heatingInTemp;
+        }
+        lastHeatingCheck = now;
+    }
+    
+    // Check bath readiness with flexible logic:
+    // If out pipe meets threshold → ready
+    // OR if out pipe is colder than tank, check tank threshold → ready
+    bathIsReady = (outPipeTemp >= config.min_out_pipe_temp) || 
+                  (outPipeTemp < tankTemp && tankTemp >= config.min_tank_temp);
     display.updateBathStatus(bathIsReady);
+    display.updateHeatingStatus(heatingActive);
     Serial.print("Bath ready: ");
     Serial.println(bathIsReady ? "YES" : "NO");
     Serial.print("  Tank: "); Serial.print(tankTemp); Serial.print(" >= "); Serial.println(config.min_tank_temp);
     Serial.print("  OutPipe: "); Serial.print(outPipeTemp); Serial.print(" >= "); Serial.println(config.min_out_pipe_temp);
+    Serial.print("  OutPipe < Tank: "); Serial.println(outPipeTemp < tankTemp ? "YES" : "NO");
+    Serial.print("  Heating active: "); Serial.println(heatingActive ? "YES" : "NO");
 }
 
 // Fetch list of temperature sensors from Home Assistant
@@ -661,6 +743,7 @@ void startWebServer() {
     server.on("/status", handleStatus);
     server.on("/ha/entities", handleHAEntities);
     server.on("/ha/test", handleHATest);
+    server.on("/display-test", handleDisplayTest);
     server.begin();
     Serial.println("Web server started on port 80");
     Serial.print("Access at: http://");
@@ -670,7 +753,7 @@ void startWebServer() {
 void handleConfig() {
     Config config = configManager.getConfig();
     
-    String html = "<!DOCTYPE html><html><head>";
+    String html = "<!DOCTYPE html><html lang='en'><head>";
     html += "<meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
     html += "<title>Water Status Configuration</title>";
     html += "<style>";
@@ -693,6 +776,8 @@ void handleConfig() {
     html += ".status.success{background:#d4edda;color:#155724;}";
     html += ".status.error{background:#f8d7da;color:#721c24;}";
     html += ".status.loading{background:#fff3cd;color:#856404;}";
+    html += "input[type='number']{-moz-appearance:textfield;}";
+    html += "input[type='number']::-webkit-inner-spin-button,input[type='number']::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}";
     html += "</style></head><body>";
     html += "<div class='container'>";
     html += "<h1>🚿 Water Status Monitor</h1>";
@@ -704,7 +789,6 @@ void handleConfig() {
     html += "<div class='temp-display'>Tank: <span class='temp-value' id='t-tank'>" + String(tankTemp, 1) + "°C</span></div>";
     html += "<div class='temp-display'>Out Pipe: <span class='temp-value' id='t-out'>" + String(outPipeTemp, 1) + "°C</span></div>";
     html += "<div class='temp-display'>Heating In: <span class='temp-value' id='t-hin'>" + String(heatingInTemp, 1) + "°C</span></div>";
-    html += "<div class='temp-display'>Heating Out: <span class='temp-value' id='t-hout'>" + String(heatingOutTemp, 1) + "°C</span></div>";
     html += "</div>";
     
     html += "<form method='POST' action='/save'>";
@@ -718,6 +802,7 @@ void handleConfig() {
     html += "<input type='text' name='ha_token' id='ha_token' value='" + String(config.ha_token) + "' placeholder='Your HA token'></div>";
     html += "<button type='button' class='btn btn-secondary' onclick='testHA()'>🔌 Test Connection</button>";
     html += "<button type='button' class='btn btn-secondary' onclick='loadEntities()'>📥 Load Sensors</button>";
+    html += "<button type='button' class='btn btn-secondary' onclick='testDisplay()'>🎨 Test Display</button>";
     html += "</div>";
     
     html += "<div class='section'>";
@@ -748,14 +833,6 @@ void handleConfig() {
     }
     html += "</select></div>";
     
-    // Heating out temp
-    html += "<div class='form-group'><label>Heating Out Temperature:</label>";
-    html += "<select name='entity_heat_out' id='entity_heat_out'><option value=''>-- Select sensor --</option>";
-    if (strlen(config.entity_heating_out_temp) > 0) {
-        html += "<option value='" + String(config.entity_heating_out_temp) + "' selected>" + String(config.entity_heating_out_temp) + "</option>";
-    }
-    html += "</select></div>";
-    
     // Room temp
     html += "<div class='form-group'><label>Room Temperature:</label>";
     html += "<select name='entity_room' id='entity_room'><option value=''>-- Select sensor --</option>";
@@ -768,11 +845,17 @@ void handleConfig() {
     html += "<div class='section'>";
     html += "<h2>🌡️ Temperature Thresholds</h2>";
     html += "<div class='form-group'><label>Min Tank Temp (°C):</label>";
-    html += "<input type='number' step='0.1' name='min_tank' value='" + String(config.min_tank_temp, 1) + "'></div>";
+    html += "<input type='text' inputmode='decimal' pattern='[0-9]*[.]?[0-9]*' name='min_tank' value='" + String(config.min_tank_temp, 1) + "'></div>";
     html += "<div class='form-group'><label>Min Out Pipe Temp (°C):</label>";
-    html += "<input type='number' step='0.1' name='min_out' value='" + String(config.min_out_pipe_temp, 1) + "'></div>";
+    html += "<input type='text' inputmode='decimal' pattern='[0-9]*[.]?[0-9]*' name='min_out' value='" + String(config.min_out_pipe_temp, 1) + "'></div>";
     html += "<div class='form-group'><label>Poll Interval (seconds):</label>";
     html += "<input type='number' name='poll_interval' value='" + String(config.poll_interval) + "' min='5' max='300'></div>";
+    html += "</div>";
+    
+    html += "<div class='section'>";
+    html += "<h2>🔆 Display Settings</h2>";
+    html += "<div class='form-group'><label>Screen Brightness (0-255):</label>";
+    html += "<input type='number' name='brightness' value='" + String(config.screen_brightness) + "' min='0' max='255'></div>";
     html += "</div>";
     
     html += "<button type='submit' class='btn'>💾 Save Configuration</button>";
@@ -798,7 +881,7 @@ void handleConfig() {
     html += "  fetch('/ha/entities').then(r=>r.json()).then(d=>{";
     html += "    if(d.error){status.className='status error';status.innerHTML='❌ '+d.error;return;}";
     html += "    status.className='status success';status.innerHTML='✅ Found '+d.entities.length+' temperature sensors';";
-    html += "    var selects=['entity_tank','entity_out','entity_heat_in','entity_heat_out','entity_room'];";
+    html += "    var selects=['entity_tank','entity_out','entity_heat_in','entity_room'];";
     html += "    selects.forEach(id=>{";
     html += "      var sel=document.getElementById(id);";
     html += "      var cur=sel.value;";
@@ -812,13 +895,19 @@ void handleConfig() {
     html += "    });";
     html += "  }).catch(e=>{status.className='status error';status.innerHTML='❌ Network error';});";
     html += "}";
+    html += "function testDisplay(){";
+    html += "  var status=document.getElementById('ha-status');";
+    html += "  status.className='status loading';status.innerHTML='🎨 Testing display modes...';";
+    html += "  fetch('/display-test').then(r=>r.json()).then(d=>{";
+    html += "    status.className='status success';status.innerHTML='✅ '+d.message;";
+    html += "  }).catch(e=>{status.className='status error';status.innerHTML='❌ Error';});";
+    html += "}";
     html += "function updateTemps(){";
     html += "  fetch('/status').then(r=>r.json()).then(d=>{";
     html += "    document.getElementById('t-room').innerText=d.roomTemp.toFixed(1)+'°C';";
     html += "    document.getElementById('t-tank').innerText=d.tankTemp.toFixed(1)+'°C';";
     html += "    document.getElementById('t-out').innerText=d.outPipeTemp.toFixed(1)+'°C';";
     html += "    document.getElementById('t-hin').innerText=d.heatingInTemp.toFixed(1)+'°C';";
-    html += "    document.getElementById('t-hout').innerText=d.heatingOutTemp.toFixed(1)+'°C';";
     html += "    document.getElementById('ha-conn').innerHTML='<span style=\"color:#4CAF50\">● Live</span>';";
     html += "  }).catch(e=>{";
     html += "    document.getElementById('ha-conn').innerHTML='<span style=\"color:#f44336\">● Error</span>';";
@@ -842,7 +931,6 @@ void handleSaveConfig() {
     server.arg("entity_tank").toCharArray(config.entity_tank_temp, sizeof(config.entity_tank_temp));
     server.arg("entity_out").toCharArray(config.entity_out_pipe_temp, sizeof(config.entity_out_pipe_temp));
     server.arg("entity_heat_in").toCharArray(config.entity_heating_in_temp, sizeof(config.entity_heating_in_temp));
-    server.arg("entity_heat_out").toCharArray(config.entity_heating_out_temp, sizeof(config.entity_heating_out_temp));
     server.arg("entity_room").toCharArray(config.entity_room_temp, sizeof(config.entity_room_temp));
     
     // Update thresholds and settings
@@ -852,27 +940,35 @@ void handleSaveConfig() {
     if (config.poll_interval < 5) config.poll_interval = 5;
     if (config.poll_interval > 300) config.poll_interval = 300;
     
+    // Update display settings
+    config.screen_brightness = server.arg("brightness").toInt();
+    if (config.screen_brightness < 0) config.screen_brightness = 0;
+    if (config.screen_brightness > 255) config.screen_brightness = 255;
+    
     // Save to NVS
     configManager.setHA(config.ha_url, config.ha_token);
     configManager.setEntities(config.entity_tank_temp, config.entity_out_pipe_temp, 
-                              config.entity_heating_in_temp, config.entity_heating_out_temp,
+                              config.entity_heating_in_temp,
                               config.entity_room_temp);
     configManager.setThresholds(config.min_tank_temp, config.min_out_pipe_temp);
+    configManager.setBrightness(config.screen_brightness);
     configManager.save();
+    
+    // Apply changes immediately without reboot
+    display.setBrightness(config.screen_brightness);
+    display.setThresholds(config.min_tank_temp, config.min_out_pipe_temp);
     
     String html = "<!DOCTYPE html><html><head>";
     html += "<meta charset='UTF-8'>";
+    html += "<meta http-equiv='refresh' content='2;url=/'>";
     html += "<style>body{font-family:Arial;text-align:center;padding:50px;background:#667eea;color:#fff;}</style>";
     html += "</head><body>";
     html += "<h1>✅ Configuration Saved!</h1>";
-    html += "<p>Device will restart in 3 seconds...</p>";
-    html += "<p>Reconnect to: http://" + WiFi.localIP().toString() + "</p>";
+    html += "<p>Settings applied successfully.</p>";
+    html += "<p>Redirecting back to config page...</p>";
     html += "</body></html>";
     
     server.send(200, "text/html", html);
-    
-    delay(3000);
-    ESP.restart();
 }
 
 void handleStatus() {
@@ -886,10 +982,20 @@ void handleStatus() {
     json += "\"tankTemp\":" + String(tankTemp, 1) + ",";
     json += "\"outPipeTemp\":" + String(outPipeTemp, 1) + ",";
     json += "\"heatingInTemp\":" + String(heatingInTemp, 1) + ",";
-    json += "\"heatingOutTemp\":" + String(heatingOutTemp, 1) + ",";
     json += "\"wifiConnected\":" + String(wifiConnected ? "true" : "false") + ",";
     json += "\"haConnected\":" + String(haConnected ? "true" : "false");
     json += "}";
+    
+    server.send(200, "application/json", json);
+}
+
+void handleDisplayTest() {
+    testMode = !testMode;
+    testState = 0;
+    lastTestStateChange = millis();
+    
+    String message = testMode ? "Display test started - cycling through states every 3s" : "Display test stopped";
+    String json = "{\"success\":true,\"message\":\"" + message + "\"}";
     
     server.send(200, "application/json", json);
 }
