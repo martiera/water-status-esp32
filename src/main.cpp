@@ -14,6 +14,20 @@
 #define NUM_LEDS 1
 Adafruit_NeoPixel rgbLed(NUM_LEDS, RGB_LED_PIN, NEO_RGB + NEO_KHZ800);
 
+// Timing constants
+const unsigned long DISPLAY_UPDATE_INTERVAL = 1000;
+const unsigned long HEATING_CHECK_INTERVAL = 60000;  // Check heating every minute
+const unsigned long LED_FLASH_INTERVAL_NOT_READY = 500;
+const unsigned long LED_PULSE_INTERVAL_HEATING = 1000;
+const unsigned long LED_UPDATE_INTERVAL_READY = 2000;
+const unsigned long TEST_STATE_CHANGE_INTERVAL = 3000;
+const unsigned long WIFI_RECONNECT_INTERVAL = 30000;
+const unsigned long HTTP_TIMEOUT = 5000;
+
+// Heating detection constants
+const float HEATING_TEMP_THRESHOLD = 0.5;  // Minimum °C increase to detect heating
+const float HEATING_TEMP_DECREASE = 1.0;   // °C decrease to detect heating stopped
+
 // Global objects
 ConfigManager configManager;
 DisplayManager display;
@@ -31,7 +45,7 @@ bool wifiConnected = false;
 bool haConnected = false;
 unsigned long lastHAPoll = 0;
 unsigned long lastDisplayUpdate = 0;
-const unsigned long DISPLAY_UPDATE_INTERVAL = 1000;
+unsigned long lastWiFiCheck = 0;
 
 // Sensor temperatures
 float tankTemp = 0.0;
@@ -145,7 +159,7 @@ void loop() {
     // Test mode - cycle through display states
     if (testMode) {
         unsigned long now = millis();
-        if (now - lastTestStateChange > 3000) {  // Change state every 3 seconds
+        if (now - lastTestStateChange > TEST_STATE_CHANGE_INTERVAL) {
             lastTestStateChange = now;
             testState = (testState + 1) % 4;
             
@@ -186,8 +200,23 @@ void loop() {
         }
     }
     
-    // Update display periodically
+    // Get current time for all timing checks
     unsigned long now = millis();
+    
+    // WiFi reconnection logic
+    if (wifiConnected && WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi disconnected! Attempting reconnection...");
+        wifiConnected = false;
+        lastWiFiCheck = now;
+    }
+    
+    if (!wifiConnected && !apMode && (now - lastWiFiCheck > WIFI_RECONNECT_INTERVAL)) {
+        lastWiFiCheck = now;
+        Serial.println("Attempting WiFi reconnection...");
+        setupWiFi();
+    }
+    
+    // Update display periodically
     if (now - lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL) {
         lastDisplayUpdate = now;
         display.refresh();
@@ -196,7 +225,7 @@ void loop() {
     // LED feedback based on state
     if (!bathIsReady) {
         // Flash LED red when STOP (not ready)
-        if (now - lastLedFlash > 500) {  // Flash every 500ms
+        if (now - lastLedFlash > LED_FLASH_INTERVAL_NOT_READY) {
             lastLedFlash = now;
             ledOn = !ledOn;
             if (ledOn) {
@@ -208,7 +237,7 @@ void loop() {
         }
     } else if (heatingActive) {
         // Bath ready AND heating active - pulse orange
-        if (now - lastLedFlash > 1000) {  // Pulse every 1 second
+        if (now - lastLedFlash > LED_PULSE_INTERVAL_HEATING) {
             lastLedFlash = now;
             ledOn = !ledOn;
             if (ledOn) {
@@ -220,7 +249,7 @@ void loop() {
         }
     } else {
         // Bath ready, heating inactive - solid green
-        if (!ledOn || now - lastLedFlash > 2000) {
+        if (!ledOn || now - lastLedFlash > LED_UPDATE_INTERVAL_READY) {
             rgbLed.setPixelColor(0, rgbLed.Color(0, 255, 0));  // Green
             rgbLed.show();
             ledOn = true;
@@ -231,6 +260,13 @@ void loop() {
     delay(100);
 }
 
+/**
+ * @brief Connect to configured WiFi network
+ * 
+ * Attempts to connect to the WiFi network specified in configuration.
+ * Will try up to 20 times (10 seconds) before giving up.
+ * Updates wifiConnected flag and displays IP address on success.
+ */
 void setupWiFi() {
     Config config = configManager.getConfig();
     
@@ -263,7 +299,16 @@ void setupWiFi() {
     }
 }
 
-// Fetch temperature from a single Home Assistant entity
+/**
+ * @brief Fetch temperature from a single Home Assistant entity
+ * 
+ * @param entityId The entity ID to fetch (e.g., "sensor.tank_temperature")
+ * @return float The temperature value, or 0.0 if fetch failed or entity unavailable
+ * 
+ * Uses string-based parsing to extract the "state" field from JSON response.
+ * This avoids ArduinoJson memory allocation issues with large responses.
+ * Enables HTTP connection reuse for better performance.
+ */
 float fetchHAEntityState(const char* entityId) {
     if (strlen(entityId) == 0) {
         return 0.0;
@@ -283,7 +328,8 @@ float fetchHAEntityState(const char* entityId) {
     http.begin(url);
     http.addHeader("Authorization", String("Bearer ") + config.ha_token);
     http.addHeader("Content-Type", "application/json");
-    http.setTimeout(5000);
+    http.setTimeout(HTTP_TIMEOUT);
+    http.setReuse(true);  // Enable connection reuse for better performance
     
     int httpCode = http.GET();
     float temperature = 0.0;
@@ -326,7 +372,16 @@ float fetchHAEntityState(const char* entityId) {
     return temperature;
 }
 
-// Poll all configured entities from Home Assistant
+/**
+ * @brief Poll all configured temperature sensors from Home Assistant
+ * 
+ * Fetches current state of all configured temperature entities via HA REST API.
+ * Uses string parsing instead of JSON to avoid memory allocation issues.
+ * Updates display and checks bath readiness after fetching all sensors.
+ * 
+ * Also performs heating activity detection by comparing temperature changes
+ * over 60 second intervals.
+ */
 void pollHomeAssistant() {
     Config config = configManager.getConfig();
     
@@ -389,19 +444,30 @@ void pollHomeAssistant() {
     Serial.print("Any success: ");
     Serial.println(anySuccess ? "YES" : "NO");
     
-    // Detect heating activity (heating in temp increased in last 5 minutes)
+    // Detect heating activity (heating in temp increased significantly)
     unsigned long now = millis();
-    if (now - lastHeatingCheck > 60000) { // Check every minute
-        // Only compare if we have a valid previous reading (not the initial 0.0)
-        if (previousHeatingInTemp > 0.0 && heatingInTemp > 0.0) {
-            if (heatingInTemp > previousHeatingInTemp + 1) {
+    if (now - lastHeatingCheck > HEATING_CHECK_INTERVAL) {
+        // Only compare if we have valid readings (not initial 0.0) and enough time has passed
+        if (previousHeatingInTemp > 0.0 && heatingInTemp > 0.0 && lastHeatingCheck > 0) {
+            float tempDiff = heatingInTemp - previousHeatingInTemp;
+            
+            // Calculate rate of change per minute
+            float minutesElapsed = (now - lastHeatingCheck) / 60000.0;
+            float ratePerMinute = tempDiff / minutesElapsed;
+            
+            if (ratePerMinute > HEATING_TEMP_THRESHOLD) {
                 heatingActive = true;
-                Serial.println("Heating ACTIVE detected");
-            } else if (heatingInTemp < previousHeatingInTemp - 1) {
+                Serial.print("Heating ACTIVE detected: +");
+                Serial.print(tempDiff, 2);
+                Serial.print("°C in ");
+                Serial.print(minutesElapsed, 1);
+                Serial.println(" min");
+            } else if (ratePerMinute < -HEATING_TEMP_DECREASE) {
                 heatingActive = false;
-                Serial.println("Heating INACTIVE");
+                Serial.println("Heating INACTIVE (temp dropping)");
             }
         }
+        
         // Update previous reading only if current reading is valid
         if (heatingInTemp > 0.0) {
             previousHeatingInTemp = heatingInTemp;
@@ -428,6 +494,7 @@ void pollHomeAssistant() {
 void handleHAEntities() {
     Config config = configManager.getConfig();
     
+    // Get from POST body for security
     String ha_url = server.arg("ha_url");
     String ha_token = server.arg("ha_token");
     
@@ -437,6 +504,12 @@ void handleHAEntities() {
     
     if (ha_url.length() == 0 || ha_token.length() == 0) {
         server.send(400, "application/json", "{\"error\":\"HA not configured\"}");
+        return;
+    }
+    
+    // Validate URL format
+    if (!ha_url.startsWith("http://") && !ha_url.startsWith("https://")) {
+        server.send(400, "application/json", "{\"error\":\"Invalid URL format\"}");
         return;
     }
     
@@ -451,7 +524,8 @@ void handleHAEntities() {
     http.begin(url);
     http.addHeader("Authorization", String("Bearer ") + ha_token);
     http.addHeader("Content-Type", "application/json");
-    http.setTimeout(15000);
+    http.setTimeout(HTTP_TIMEOUT * 3);  // Longer timeout for template API
+    http.setReuse(true);
     
     int httpCode = http.POST(templateBody);
     Serial.print("HA template response: ");
@@ -474,7 +548,8 @@ void handleHAEntities() {
         url = ha_url + "/api/states";
         http.begin(url);
         http.addHeader("Authorization", String("Bearer ") + ha_token);
-        http.setTimeout(15000);
+        http.setTimeout(HTTP_TIMEOUT * 3);
+        http.setReuse(true);
         
         httpCode = http.GET();
         if (httpCode == HTTP_CODE_OK) {
@@ -581,6 +656,7 @@ void handleHAEntities() {
 void handleHATest() {
     Config config = configManager.getConfig();
     
+    // Get credentials from POST body, not URL params (security)
     String ha_url = server.arg("ha_url");
     String ha_token = server.arg("ha_token");
     
@@ -595,12 +671,19 @@ void handleHATest() {
         return;
     }
     
+    // Validate URL format
+    if (!ha_url.startsWith("http://") && !ha_url.startsWith("https://")) {
+        server.send(400, "application/json", "{\"success\":false,\"error\":\"Invalid URL format\"}");
+        return;
+    }
+    
     // Use /api/ endpoint which returns API info
     String url = ha_url + "/api/";
     
     http.begin(url);
     http.addHeader("Authorization", String("Bearer ") + ha_token);
-    http.setTimeout(5000);
+    http.setTimeout(HTTP_TIMEOUT);
+    http.setReuse(true);
     
     int httpCode = http.GET();
     Serial.print("HA test response code: ");
@@ -624,6 +707,13 @@ void handleHATest() {
     http.end();
 }
 
+/**
+ * @brief Start Access Point mode for initial WiFi configuration
+ * 
+ * Creates a captive portal at "Water-Status-AP" SSID.
+ * Serves a web interface for WiFi network selection and connection.
+ * All DNS queries redirected to the device for captive portal functionality.
+ */
 void startAPMode() {
     apMode = true;
     WiFi.mode(WIFI_AP);
@@ -736,13 +826,25 @@ void handleNotFound() {
     server.send(302, "text/plain", "");
 }
 
+/**
+ * @brief Initialize web server with all routes
+ * 
+ * Sets up HTTP endpoints for:
+ * - Configuration UI (GET /)
+ * - Save settings (POST /save)
+ * - Status API (GET /status)
+ * - HA integration (POST /ha/test, POST /ha/entities)
+ * - Display test mode (GET /display-test)
+ * 
+ * All sensitive operations use POST to avoid token exposure in logs.
+ */
 void startWebServer() {
     // Setup web server routes for normal WiFi mode
     server.on("/", handleConfig);
     server.on("/save", HTTP_POST, handleSaveConfig);
     server.on("/status", handleStatus);
-    server.on("/ha/entities", handleHAEntities);
-    server.on("/ha/test", handleHATest);
+    server.on("/ha/entities", HTTP_POST, handleHAEntities);  // POST for security
+    server.on("/ha/test", HTTP_POST, handleHATest);          // POST for security
     server.on("/display-test", handleDisplayTest);
     server.begin();
     Serial.println("Web server started on port 80");
@@ -869,7 +971,8 @@ void handleConfig() {
     html += "  status.className='status loading';status.innerHTML='Testing connection...';";
     html += "  var url=document.getElementById('ha_url').value;";
     html += "  var token=document.getElementById('ha_token').value;";
-    html += "  fetch('/ha/test?ha_url='+encodeURIComponent(url)+'&ha_token='+encodeURIComponent(token))";
+    html += "  var formData=new FormData();formData.append('ha_url',url);formData.append('ha_token',token);";
+    html += "  fetch('/ha/test',{method:'POST',body:formData})";
     html += "  .then(r=>r.json()).then(d=>{";
     html += "    status.className='status '+(d.success?'success':'error');";
     html += "    status.innerHTML=d.success?'✅ Connected to Home Assistant':'❌ '+d.error;";
@@ -878,7 +981,10 @@ void handleConfig() {
     html += "function loadEntities(){";
     html += "  var status=document.getElementById('ha-status');";
     html += "  status.className='status loading';status.innerHTML='Loading sensors...';";
-    html += "  fetch('/ha/entities').then(r=>r.json()).then(d=>{";
+    html += "  var url=document.getElementById('ha_url').value;";
+    html += "  var token=document.getElementById('ha_token').value;";
+    html += "  var formData=new FormData();formData.append('ha_url',url);formData.append('ha_token',token);";
+    html += "  fetch('/ha/entities',{method:'POST',body:formData}).then(r=>r.json()).then(d=>{";
     html += "    if(d.error){status.className='status error';status.innerHTML='❌ '+d.error;return;}";
     html += "    status.className='status success';status.innerHTML='✅ Found '+d.entities.length+' temperature sensors';";
     html += "    var selects=['entity_tank','entity_out','entity_heat_in','entity_room'];";
@@ -933,9 +1039,23 @@ void handleSaveConfig() {
     server.arg("entity_heat_in").toCharArray(config.entity_heating_in_temp, sizeof(config.entity_heating_in_temp));
     server.arg("entity_room").toCharArray(config.entity_room_temp, sizeof(config.entity_room_temp));
     
-    // Update thresholds and settings
-    config.min_tank_temp = server.arg("min_tank").toFloat();
-    config.min_out_pipe_temp = server.arg("min_out").toFloat();
+    // Update thresholds and settings with validation
+    float minTank = server.arg("min_tank").toFloat();
+    float minOut = server.arg("min_out").toFloat();
+    
+    // Validate temperature thresholds
+    if (minTank < 0.0 || minTank > 100.0) {
+        server.send(400, "text/html", "<html><body><h1>Error: Invalid tank threshold (0-100°C)</h1></body></html>");
+        return;
+    }
+    if (minOut < 0.0 || minOut > 100.0) {
+        server.send(400, "text/html", "<html><body><h1>Error: Invalid out pipe threshold (0-100°C)</h1></body></html>");
+        return;
+    }
+    
+    config.min_tank_temp = minTank;
+    config.min_out_pipe_temp = minOut;
+    
     config.poll_interval = server.arg("poll_interval").toInt();
     if (config.poll_interval < 5) config.poll_interval = 5;
     if (config.poll_interval > 300) config.poll_interval = 300;
@@ -998,5 +1118,23 @@ void handleDisplayTest() {
     String json = "{\"success\":true,\"message\":\"" + message + "\"}";
     
     server.send(200, "application/json", json);
+    
+    // When exiting test mode, immediately return to production
+    if (!testMode) {
+        // Reset heating state (will be detected properly on next poll)
+        heatingActive = false;
+        
+        // Force immediate HA poll to get real sensor data
+        pollHomeAssistant();
+        
+        // Force display update with actual data
+        display.updateBathStatus(bathIsReady);
+        display.updateHeatingStatus(heatingActive);
+        
+        // Force immediate display refresh to clear test state
+        display.refresh();
+        
+        Serial.println("Test mode stopped - resumed production operation");
+    }
 }
 

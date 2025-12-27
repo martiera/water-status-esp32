@@ -128,10 +128,30 @@ void ConfigManager::setEntities(const char* tank, const char* outPipe, const cha
 }
 
 void ConfigManager::setThresholds(float minTank, float minOutPipe) {
-    config.min_tank_temp = minTank;
-    config.min_out_pipe_temp = minOutPipe;
+    // Validate temperature ranges (0-100°C reasonable for water system)
+    if (minTank >= 0.0 && minTank <= 100.0) {
+        config.min_tank_temp = minTank;
+    } else {
+        Serial.print("Invalid tank threshold: ");
+        Serial.println(minTank);
+    }
+    
+    if (minOutPipe >= 0.0 && minOutPipe <= 100.0) {
+        config.min_out_pipe_temp = minOutPipe;
+    } else {
+        Serial.print("Invalid out pipe threshold: ");
+        Serial.println(minOutPipe);
+    }
 }
 
 void ConfigManager::setBrightness(int brightness) {
+    // Clamp brightness to valid PWM range
+    if (brightness < 0) {
+        brightness = 0;
+        Serial.println("Brightness clamped to 0");
+    } else if (brightness > 255) {
+        brightness = 255;
+        Serial.println("Brightness clamped to 255");
+    }
     config.screen_brightness = brightness;
 }

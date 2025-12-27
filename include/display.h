@@ -3,7 +3,13 @@
 
 #include <Arduino.h>
 
-// Temperature data structure
+/**
+ * @brief Temperature sensor data structure
+ * 
+ * Stores current readings and state for all temperature sensors.
+ * Includes validity flags to handle sensor failures gracefully.
+ * Tracks hot water activity for intelligent display mode switching.
+ */
 struct TemperatureData {
     float tankTemp;
     float outPipeTemp;
@@ -21,6 +27,19 @@ struct TemperatureData {
     bool heatingActive;  // Track if heating is currently running
 };
 
+/**
+ * @brief Display manager for TFT LCD interface
+ * 
+ * Manages all display operations including:
+ * - Temperature visualization
+ * - Bath readiness status (STOP sign or bath image)
+ * - Room temperature display
+ * - Heating activity animations
+ * - Brightness control
+ * 
+ * Uses LovyanGFX library for hardware acceleration.
+ * Implements smart refresh logic to minimize redraws.
+ */
 class DisplayManager {
 private:
     TemperatureData tempData;

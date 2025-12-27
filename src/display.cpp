@@ -8,6 +8,11 @@
 // Pin definitions for Waveshare ESP32-C6 1.47"
 #define TFT_BL 22  // Backlight pin
 
+// Display timing constants
+const unsigned long BATH_IMAGE_DISPLAY_TIME = 4000;   // 4 seconds
+const unsigned long ROOM_TEMP_DISPLAY_TIME = 2000;    // 2 seconds
+const unsigned long ACTIVITY_TIMEOUT = 120000;        // 2 minutes
+
 // LovyanGFX configuration for Waveshare ESP32-C6 1.47"
 class LGFX_ESP32C6 : public lgfx::LGFX_Device
 {
@@ -373,8 +378,7 @@ void DisplayManager::updateTemperature(int sensor, float value) {
     
     // Determine which display mode to show
     // Show bath status only if there's been hot water activity in last 2 minutes
-    unsigned long activityTimeout = 120000; // 2 minutes
-    bool shouldShowBathStatus = (now - tempData.lastHotWaterActivity) < activityTimeout;
+    bool shouldShowBathStatus = (now - tempData.lastHotWaterActivity) < ACTIVITY_TIMEOUT;
     
     // Mark display for redraw if:
     // - Temperature changed
@@ -483,7 +487,7 @@ void DisplayManager::refresh() {
     // Check if we need to toggle bath/room display when bath is ready
     if (bathReady && showingBathStatus) {
         unsigned long now = millis();
-        unsigned long toggleInterval = showingBathImage ? 4000 : 2000;  // 4s bath, 2s room
+        unsigned long toggleInterval = showingBathImage ? BATH_IMAGE_DISPLAY_TIME : ROOM_TEMP_DISPLAY_TIME;
         
         if (now - lastDisplayToggle > toggleInterval) {
             lastDisplayToggle = now;
@@ -492,7 +496,7 @@ void DisplayManager::refresh() {
         }
     }
     
-    // Only redraw if something changed
+    // Only redraw if something changed (optimization)
     if (!needsRedraw) {
         return;
     }

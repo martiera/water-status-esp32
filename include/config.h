@@ -4,7 +4,12 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
-// Configuration structure
+/**
+ * @brief Configuration data structure
+ * 
+ * Contains all user-configurable parameters for the water monitoring system.
+ * Stored in NVS and loaded on boot.
+ */
 struct Config {
     // WiFi settings
     char wifi_ssid[64];
@@ -32,6 +37,18 @@ struct Config {
     int poll_interval;                   // How often to fetch from HA
 };
 
+/**
+ * @brief Configuration manager for persistent storage using NVS
+ * 
+ * Handles loading, saving, and managing all device configuration including:
+ * - WiFi credentials
+ * - Home Assistant connection details
+ * - Entity IDs for temperature sensors
+ * - Temperature thresholds for bath readiness
+ * - Display settings
+ * 
+ * All settings are persisted to ESP32 NVS (Non-Volatile Storage).
+ */
 class ConfigManager {
 private:
     Preferences preferences;

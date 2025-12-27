@@ -1,45 +1,55 @@
 # Water Status ESP32-C6 Monitor
 
-IoT device for monitoring hot water system temperatures and displaying bath readiness status using Waveshare ESP32-C6 1.47" Display (172×320).
+A sophisticated ESP32-C6 based water temperature monitoring system with visual display and Home Assistant integration using Waveshare ESP32-C6 1.47" Display (320×172).
 
 ## Features
 
 - 📊 **4 Temperature Monitoring Points**:
   - Hot water storage tank
   - Hot water out pipe
-  - Heating pipe incoming
-  - Heating pipe exiting
+  - Heating pipe incoming temperature
+  - Room temperature
 
-- 🎯 **Bath Readiness Detection**: Automatically determines if water is ready for bathing based on configurable temperature thresholds
+- 🎯 **Smart Bath Readiness Detection**: Flexible logic determines if water is ready based on configurable temperature thresholds
+
+- 🔥 **Heating Activity Detection**: Automatically detects when heating system is active and displays animated indicators
+
+- 🚦 **RGB LED Status Indicator**:
+  - 🔴 Red Flash: Water not ready
+  - 🟠 Orange Pulse: Heating active
+  - 🟢 Green Solid: Bath ready
 
 - 📱 **Web Configuration Interface**: Easy setup through browser-based configuration panel
 
-- 📡 **MQTT Integration**: Subscribe to temperature data from your home automation system
+- 🏠 **Home Assistant REST API Integration**: Fetches sensor data directly from Home Assistant
 
-- 🖥️ **Real-time Display**: Color TFT display shows all temperatures and system status
+- 🖥️ **Animated Display**: 
+  - STOP sign when not ready
+  - Baby bath image when ready (alternating with room temperature)
+  - Animated heating indicators on sides
 
-- 💾 **Persistent Configuration**: Settings saved to flash memory
+- 💾 **Persistent Configuration**: All settings saved to ESP32 NVS flash memory
 
 ## Hardware Requirements
 
-- **Waveshare ESP32-C6 1.47" Display Development Board** (172×320 resolution)
+- **Waveshare ESP32-C6 1.47" Display Development Board** (320×172 resolution, ST7789)
+- Built-in RGB LED (GPIO 8)
 - USB-C cable for programming and power
-- MQTT broker (e.g., Mosquitto, Home Assistant)
+- Home Assistant instance with REST API access
 
 ## Pin Configuration
 
-The display pins are pre-configured in `platformio.ini`:
+Hardware configuration (Waveshare ESP32-C6 1.47"):
 
 ```
-TFT_MOSI = GPIO 7
-TFT_SCLK = GPIO 6
-TFT_CS   = GPIO 10
-TFT_DC   = GPIO 2
-TFT_RST  = GPIO 3
-TFT_BL   = GPIO 11
+TFT_MOSI = GPIO 6
+TFT_SCLK = GPIO 7
+TFT_CS   = GPIO 14
+TFT_DC   = GPIO 15
+TFT_RST  = GPIO 21
+TFT_BL   = GPIO 22 (PWM backlight control)
+RGB_LED  = GPIO 8
 ```
-
-These match the Waveshare ESP32-C6 1.47" board pinout.
 
 ## Software Setup
 
@@ -51,7 +61,8 @@ These match the Waveshare ESP32-C6 1.47" board pinout.
 ### 2. Clone and Build
 
 ```bash
-cd /Users/martins/WS/github.com/martiera/water-status-esp32
+git clone <repository-url>
+cd water-status-esp32
 pio run
 ```
 
@@ -64,164 +75,211 @@ pio run --target upload
 ### 4. Monitor Serial Output
 
 ```bash
-pio device monitor
+pio device monitor --baud 115200
 ```
 
 ## Initial Configuration
 
 ### First Boot - AP Mode
 
-1. On first boot, the device creates a WiFi access point:
+1. On first boot (or if WiFi not configured), the device creates a WiFi access point:
    - **SSID**: `Water-Status-AP`
-   - **Password**: `12345678`
+   - **No Password**
 
-2. Connect to the AP and navigate to: `http://192.168.4.1`
+2. Connect to the AP and navigate to the captive portal (should open automatically) or go to: `http://192.168.4.1`
 
-3. Configure:
-   - WiFi credentials
-   - MQTT broker details
-   - MQTT topics for each temperature sensor
-   - Temperature thresholds for bath readiness
+3. Select your WiFi network and enter password
 
-4. Click **Save Configuration** - device will restart and connect to your network
+4. Device will restart and connect to your network
 
-### Normal Operation Mode
+### Home Assistant Configuration
 
-Once configured, access the web interface at the device's IP address (shown in serial monitor).
+Once connected to WiFi, access the web interface at the device's IP address (shown on display for 3 seconds at startup, or check your router/serial monitor).
 
-## MQTT Configuration
+Navigate to `http://<device-ip>/` to configure:
 
-### Default Topics
+#### 1. Home Assistant Connection
 
-The device subscribes to these topics (configurable via web interface):
+- **HA URL**: Your Home Assistant URL (e.g., `http://homeassistant.local:8123` or `http://192.168.1.100:8123`)
+- **Long-Lived Access Token**: Create in HA Profile → Long-Lived Access Tokens
+- Click **Test Connection** to verify
 
-```
-home/water/tank/temperature           # Tank temperature
-home/water/outpipe/temperature        # Out pipe temperature
-home/water/heating/in/temperature     # Heating incoming
-home/water/heating/out/temperature    # Heating exiting
-```
+#### 2. Temperature Sensors
 
-### Message Format
+Click **Load Sensors** to fetch all available temperature sensors from Home Assistant, then select:
 
-Temperature values should be published as simple numeric strings:
+- **Tank Temperature**: Hot water storage tank sensor
+- **Out Pipe Temperature**: Hot water outlet sensor  
+- **Heating In Temperature**: Heating system inlet sensor (for heating detection)
+- **Room Temperature**: Room temperature sensor (for display)
 
-```bash
-mosquitto_pub -h your-broker -t "home/water/tank/temperature" -m "42.5"
-```
+#### 3. Temperature Thresholds
 
-### Example Home Assistant Configuration
+- **Min Tank Temp**: Minimum tank temperature for bath (default: 52.0°C)
+- **Min Out Pipe Temp**: Minimum out pipe temperature (default: 38.0°C)
+- **Poll Interval**: How often to fetch from HA in seconds (default: 10)
+
+#### 4. Display Settings
+
+- **Screen Brightness**: 0-255 (default: 80)
+
+Click **Save Configuration** to apply changes (no reboot required).
+
+## Home Assistant Setup
+
+### Required Sensors
+
+You need temperature sensors configured in Home Assistant. Example configuration:
 
 ```yaml
-mqtt:
+# Example: ESPHome temperature sensors
+esphome:
   sensor:
-    - name: "Water Tank Temperature"
-      state_topic: "home/water/tank/temperature"
-      unit_of_measurement: "°C"
-      device_class: temperature
+    - platform: dallas
+      name: "Tank Temperature"
+      address: 0x1234567890abcdef
+      
+    - platform: dallas
+      name: "Out Pipe Temperature"
+      address: 0xfedcba0987654321
+      
+    - platform: dallas
+      name: "Heating In Temperature"
+      address: 0x1111222233334444
+
+# Or any other temperature sensor platform
+sensor:
+  - platform: mqtt
+    name: "Tank Temperature"
+    state_topic: "home/sensors/tank_temp"
+    unit_of_measurement: "°C"
+    device_class: temperature
 ```
+
+The device will automatically discover and list all temperature sensors with `device_class: temperature` when you click "Load Sensors".
 
 ## Display Interface
 
-### Color Coding
+### Display Modes
 
-- **Cyan**: Tank temperature
-- **Orange**: Out pipe temperature
-- **Yellow**: Heating incoming temperature
-- **Magenta**: Heating exiting temperature
+**When Bath NOT Ready:**
+- Large red STOP sign centered on screen
+- LED flashes red every 500ms
 
-### Status Indicators
+**When Bath Ready:**
+Alternates between:
+- **Bath Image** (4 seconds): Baby bath PNG image
+- **Room Temperature** (2 seconds): Large room temperature display
 
-- **Top Left Circle**: WiFi status (Green = connected, Red = disconnected)
-- **Top Right Circle**: MQTT status (Green = connected, Red = disconnected)
-- **Bottom Bar**: 
-  - **Green "BATH READY"**: Temperatures meet threshold requirements
-  - **Red "NOT READY"**: Temperatures below threshold
+### Heating Indicator
+
+When heating system is active (detected by temperature increase in heating inlet):
+- Animated vertical bars appear on left and right edges
+- Bars scroll upward in red, orange, and yellow colors
+- Visible on both bath image and room temperature displays
+
+### LED Status
+
+- 🔴 **Red Flash** (500ms): Bath not ready
+- 🟠 **Orange Pulse** (1s): Bath ready + heating active  
+- 🟢 **Green Solid**: Bath ready + heating inactive
+
+## Bath Readiness Logic
+
+The system uses flexible logic to handle different scenarios:
+
+```
+Bath is ready when:
+  (Out Pipe Temp >= Min Out Pipe Threshold)
+  OR
+  (Out Pipe Temp < Tank Temp AND Tank Temp >= Min Tank Threshold)
+```
+
+**Why this works:**
+- If out pipe is already hot (≥38°C), bath is ready regardless of tank
+- If out pipe is colder than tank, check if tank is hot enough (≥52°C)
+- This handles both "already flowing" and "tank full but not yet flowing" scenarios
+
+## Heating Detection
+
+Heating activity is automatically detected:
+
+- Monitors heating inlet temperature every 60 seconds
+- Heating considered **ACTIVE** when temperature increases by >0.5°C per minute
+- Heating considered **INACTIVE** when temperature drops by >1.0°C per minute
+- Visual animated indicators appear on display when active
 
 ## Configuration Parameters
 
-### Temperature Thresholds
+## Configuration Parameters
 
-Default values (Celsius):
-- **Minimum Tank Temperature**: 52°C
-- **Minimum Out Pipe Temperature**: 38°C
+### API Endpoints
 
-### Smart Bath Readiness Logic
+- **GET `/`**: Main configuration web interface
+- **POST `/save`**: Save configuration (applies immediately, no reboot)
+- **GET `/status`**: JSON API returning current sensor readings
+- **POST `/ha/test`**: Test Home Assistant connection
+- **POST `/ha/entities`**: Fetch available temperature sensors from HA
+- **GET `/display-test`**: Toggle display test mode (cycles through 4 states)
 
-The system uses intelligent detection to determine bath readiness:
-
-1. **Initial State**: Tank must be hot (≥ 52°C)
-2. **Water Flow Detection**: Monitors if tank temperature is dropping (indicating water usage)
-3. **Pipe Warmth**: Out pipe must be warm (≥ 38°C)
-
-**Why this matters**: When the tank is first heated, the out pipe may still be cold since no water has flowed. The device waits until it detects the tank temperature dropping (water flowing) AND the pipe warming up before declaring bath ready.
-
-Once bath becomes ready, it stays ready until:
-- Tank temperature drops below threshold, OR
-- Out pipe cools down significantly (below 36°C)
-
-### Display Settings
-
-- **Brightness**: 0-255 (default: 200)
-- **Temperature Unit**: Celsius or Fahrenheit
-
-## Integration Examples
-
-### Node-RED Flow
+### Status API Response
 
 ```json
-[{
-    "id": "mqtt-temp-pub",
-    "type": "mqtt out",
-    "topic": "home/water/tank/temperature",
-    "qos": "0",
-    "broker": "mqtt-broker",
-    "name": "Tank Temperature"
-}]
+{
+  "roomTemp": 22.5,
+  "tankTemp": 55.2,
+  "outPipeTemp": 42.1,
+  "heatingInTemp": 38.7,
+  "wifiConnected": true,
+  "haConnected": true
+}
 ```
 
-### Python MQTT Publisher
-
-```python
-import paho.mqtt.client as mqtt
-import random
-import time
-
-client = mqtt.Client()
-client.connect("192.168.1.100", 1883, 60)
-
-while True:
-    temp = random.uniform(35, 50)
-    client.publish("home/water/tank/temperature", str(temp))
-    time.sleep(10)
-```
+## Troubleshooting
 
 ## Troubleshooting
 
 ### Display Not Working
 
-- Check pin connections match the configuration
-- Verify TFT_BL (backlight) pin is correctly set
-- Try adjusting brightness in configuration
+- Check hardware connections to Waveshare board
+- Verify TFT_BL (GPIO 22) backlight pin
+- Adjust brightness via web interface (0-255, default 80)
 
 ### WiFi Connection Failed
 
-- Double-check SSID and password
+- Double-check SSID and password in captive portal
 - Ensure 2.4GHz WiFi (ESP32-C6 doesn't support 5GHz)
-- Check signal strength
+- Check signal strength - device auto-reconnects every 30 seconds
+- Look for "Water-Status-AP" if connection fails
 
-### MQTT Not Connecting
+### Home Assistant Not Connecting
 
-- Verify broker IP address and port
-- Check firewall settings on broker
-- Test with MQTT client: `mosquitto_sub -h broker-ip -t "#" -v`
+- Use **Test Connection** button in web interface to verify URL and token
+- Verify Home Assistant URL format: `http://homeassistant.local:8123` or `http://IP:8123`
+- Check long-lived access token is valid (HA Profile → Long-Lived Access Tokens)
+- Ensure firewall allows ESP32 to reach HA on port 8123
+- Check HA logs for authentication errors
 
 ### No Temperature Updates
 
-- Confirm topics match your MQTT setup
-- Check MQTT broker logs
-- Verify payload format (should be simple numeric string)
-- Use serial monitor to see incoming messages
+- Verify entity IDs are correct (use **Load Sensors** button)
+- Check sensors have `device_class: temperature` in HA
+- Confirm sensors return numeric values (not "unavailable" or "unknown")
+- Monitor serial output for fetch errors
+- Check poll interval isn't too long
+
+### Heating Detection Not Working
+
+- Ensure **Heating In Temperature** sensor is configured
+- Sensor must update at least every minute
+- Temperature must increase by >0.5°C per minute to trigger detection
+- Check serial monitor for "Heating ACTIVE detected" messages
+
+### Display Test Mode Stuck
+
+- Click **Test Display** button again to toggle off
+- Device immediately polls HA and returns to production mode
+- Check serial output confirms "Test mode stopped"
 
 ## Development
 
@@ -242,6 +300,63 @@ water-status-esp32/
 ```
 
 ### Libraries Used
+
+- **LovyanGFX**: Hardware-accelerated display driver for ST7789
+- **ArduinoJson**: JSON parsing (minimal usage to avoid memory issues)
+- **HTTPClient**: Home Assistant REST API communication with connection reuse
+- **Adafruit NeoPixel**: RGB LED control
+- **Preferences**: ESP32 NVS persistent storage
+- **WebServer**: Built-in HTTP server for configuration
+- **DNSServer**: Captive portal for AP mode
+
+### Performance Optimizations
+
+- HTTP connection reuse (keep-alive) for reduced latency
+- Display refresh only when content changes (needsRedraw flag)
+- String-based JSON parsing to avoid memory allocation issues
+- WiFi auto-reconnection every 30 seconds
+- All timing values defined as constants for easy tuning
+
+## Customization
+
+### Changing Display Timing
+
+Edit constants in `src/main.cpp`:
+
+```cpp
+const unsigned long DISPLAY_UPDATE_INTERVAL = 1000;        // Display refresh rate
+const unsigned long BATH_IMAGE_DISPLAY_TIME = 4000;        // Bath image duration
+const unsigned long ROOM_TEMP_DISPLAY_TIME = 2000;         // Room temp duration
+const unsigned long LED_FLASH_INTERVAL_NOT_READY = 500;    // LED flash speed
+```
+
+### Changing Bath Logic
+
+Modify logic in `src/main.cpp` pollHomeAssistant() function:
+
+```cpp
+bathIsReady = (outPipeTemp >= config.min_out_pipe_temp) || 
+              (outPipeTemp < tankTemp && tankTemp >= config.min_tank_temp);
+```
+
+### Changing Heating Detection Sensitivity
+
+Edit constants in `src/main.cpp`:
+
+```cpp
+const float HEATING_TEMP_THRESHOLD = 0.5;  // °C per minute to detect heating
+const float HEATING_TEMP_DECREASE = 1.0;   // °C per minute to detect stop
+```
+
+### Adding More Sensors
+
+1. Add entity ID field to `include/config.h` Config struct
+2. Add NVS storage in `src/config.cpp` load/save methods
+3. Add web form field in `src/main.cpp` handleConfig()
+4. Add fetch call in `src/main.cpp` pollHomeAssistant()
+5. Update display in `src/display.cpp` as needed
+
+## Libraries Used
 
 - **PubSubClient**: MQTT client
 - **ESPAsyncWebServer**: Async web server
@@ -274,11 +389,25 @@ This project is open source and available for personal and commercial use.
 
 Contributions are welcome! Please feel free to submit pull requests or open issues.
 
+## Version History
+
+- **v1.0.0** - Initial MQTT-based version
+- **v1.1.0** - Switched to Home Assistant REST API
+- **v1.2.0** - Added heating detection and visual indicators
+- **v1.3.0** - Performance optimizations and security improvements:
+  - HTTP connection reuse
+  - Display refresh optimization
+  - WiFi auto-reconnection
+  - POST for sensitive data
+  - Input validation
+  - Comprehensive documentation
+
 ## Credits
 
 - Built for Waveshare ESP32-C6 1.47" Display Development Board
-- Uses TFT_eSPI library by Bodmer
-- MQTT support via PubSubClient
+- Uses LovyanGFX library for hardware-accelerated graphics
+- Home Assistant integration via REST API
+- Baby bath image display for ready notification
 
 ---
 
