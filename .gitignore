@@ -1,0 +1,39 @@
+# .gitignore for PlatformIO ESP32 project
+
+# PlatformIO
+.pio/
+.vscode/
+.pioenvs/
+.piolibdeps/
+lib/
+libdeps/
+
+# Build artifacts
+*.o
+*.a
+*.elf
+*.bin
+*.map
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Configuration backups
+*.bak
+*.old
