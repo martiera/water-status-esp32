@@ -18,10 +18,13 @@ A sophisticated ESP32-C6 based water temperature monitoring system with visual d
   - 🔴 Red Flash: Water not ready
   - 🟠 Orange Pulse: Heating active
   - 🟢 Green Solid: Bath ready
+  - 🔵 Blue: OTA update in progress
 
 - 📱 **Web Configuration Interface**: Easy setup through browser-based configuration panel
 
 - 🏠 **Home Assistant REST API Integration**: Fetches sensor data directly from Home Assistant
+
+- 📡 **OTA Updates**: Flash firmware remotely without USB cable
 
 - 🖥️ **Animated Display**: 
   - STOP sign when not ready
@@ -68,9 +71,37 @@ pio run
 
 ### 3. Upload to Device
 
+**Initial upload (USB):**
 ```bash
 pio run --target upload
 ```
+
+**Remote upload (OTA - after first USB upload):**
+```bash
+# Find device IP address (shown on display at startup or in serial monitor)
+# Then upload via OTA:
+pio run --target upload --upload-port 192.168.1.XXX
+```
+
+Or configure OTA in `platformio.ini`:
+```ini
+; Uncomment these lines for OTA:
+upload_protocol = espota
+upload_port = 192.168.1.XXX
+upload_flags = 
+    --port=3232
+    --auth=water-status
+```
+
+Then simply run:
+```bash
+pio run --target upload
+```
+
+**OTA Credentials:**
+- Port: 3232 (default)
+- Password: `water-status`
+- Hostname: `water-status-XXXXXX` (last 6 chars of MAC address)
 
 ### 4. Monitor Serial Output
 
@@ -274,6 +305,15 @@ Heating activity is automatically detected:
 - Sensor must update at least every minute
 - Temperature must increase by >0.5°C per minute to trigger detection
 - Check serial monitor for "Heating ACTIVE detected" messages
+
+### OTA Update Issues
+
+- Ensure device is on same network as computer
+- Verify device IP address is correct
+- Password is `water-status` (case-sensitive)
+- Check firewall isn't blocking port 3232
+- Serial monitor shows "OTA Ready" and hostname on startup
+- LED turns blue during update, green on success, red on error
 
 ### Display Test Mode Stuck
 

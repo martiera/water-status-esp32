@@ -5,6 +5,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
+#include <ArduinoOTA.h>
 #include "config.h"
 #include "display.h"
 #include "web_interface.h"
@@ -68,6 +69,7 @@ unsigned long lastTestStateChange = 0;
 
 // Function declarations
 void setupWiFi();
+void setupOTA();
 void pollHomeAssistant();
 float fetchHAEntityState(const char* entityId);
 void startAPMode();
@@ -119,6 +121,9 @@ void setup() {
         display.showStartupScreen(localIP);
         delay(3000);  // Show for 3 seconds
         
+        // Setup OTA (Over-The-Air) updates
+        setupOTA();
+        
         Serial.println("Starting web server...");
         startWebServer();
         
@@ -139,9 +144,10 @@ void loop() {
         return;
     }
     
-    // Handle web server
+    // Handle web server and OTA
     if (wifiConnected) {
         server.handleClient();
+        ArduinoOTA.handle();
     }
     
     // Poll Home Assistant periodically
@@ -258,6 +264,67 @@ void loop() {
     }
     
     delay(100);
+}
+
+/**
+ * @brief Setup OTA (Over-The-Air) firmware updates
+ * 
+ * Configures Arduino OTA with:
+ * - Hostname: water-status-XXXXXX (last 6 chars of MAC)
+ * - Password: water-status
+ * - Port: 3232 (default)
+ * 
+ * Displays update progress on screen and LED.
+ */
+void setupOTA() {
+    // Set OTA hostname to water-status-XXXXXX (MAC address)
+    String hostname = "water-status-" + WiFi.macAddress().substring(12);
+    hostname.replace(":", "");
+    ArduinoOTA.setHostname(hostname.c_str());
+    
+    // Set OTA password for security
+    ArduinoOTA.setPassword("water-status");
+    
+    ArduinoOTA.onStart([]() {
+        String type = (ArduinoOTA.getCommand() == U_FLASH) ? "firmware" : "filesystem";
+        Serial.println("OTA Update Start: " + type);
+        
+        // Set LED to blue during update
+        rgbLed.setPixelColor(0, rgbLed.Color(0, 0, 255));
+        rgbLed.show();
+    });
+    
+    ArduinoOTA.onEnd([]() {
+        Serial.println("\nOTA Update Complete");
+        
+        rgbLed.setPixelColor(0, rgbLed.Color(0, 255, 0));
+        rgbLed.show();
+    });
+    
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        unsigned int percent = (progress / (total / 100));
+        Serial.printf("OTA Progress: %u%%\r", percent);
+    });
+    
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("OTA Error[%u]: ", error);
+        String errorMsg = "";
+        if (error == OTA_AUTH_ERROR) errorMsg = "Auth Failed";
+        else if (error == OTA_BEGIN_ERROR) errorMsg = "Begin Failed";
+        else if (error == OTA_CONNECT_ERROR) errorMsg = "Connect Failed";
+        else if (error == OTA_RECEIVE_ERROR) errorMsg = "Receive Failed";
+        else if (error == OTA_END_ERROR) errorMsg = "End Failed";
+        
+        Serial.println(errorMsg);
+        
+        rgbLed.setPixelColor(0, rgbLed.Color(255, 0, 0));
+        rgbLed.show();
+    });
+    
+    ArduinoOTA.begin();
+    Serial.println("OTA Ready");
+    Serial.print("Hostname: ");
+    Serial.println(hostname);
 }
 
 /**
