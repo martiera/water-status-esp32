@@ -291,6 +291,11 @@ void DisplayManager::drawStatus() {
         tft.setTextSize(2);  // Double size
         tft.drawString("STOP", centerX, stopY, 4);  // Use stopY (86) for perfect centering
         tft.setTextSize(1);  // Reset
+        
+        // Draw heating indicator even when not ready - show heating progress
+        if (tempData.heatingActive) {
+            drawHeatingIndicator();
+        }
     }
 }
 
